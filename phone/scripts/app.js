@@ -4,32 +4,94 @@ var ctxSip;
 
 $(document).ready(function() {
 
+    // Save form to localStorage and validate
+    $('#saveSettings').click(function(event) {
+
+      var user  = {},
+        valid = true;
+      event.preventDefault();
+
+      // validate the form
+      $('#myModal input').each(function(i) {
+          if ($(this).val() === '') {
+              $(this).closest('.form-group').addClass('has-error');
+              valid = false;
+          } else {
+              $(this).closest('.form-group').removeClass('has-error');
+          }
+          user[$(this).attr('name')] = $(this).val();
+      });
+
+      // save the phone credentials.
+      if (valid) {
+          localStorage.setItem('SIPCreds', JSON.stringify(user));
+          $('#myModal').modal('hide');
+          loadSIPCreds();
+          initctxSip(user);
+      }
+
+    });
+
+    // load the values from localStorage
+    function loadSIPCreds() {
+      var user = JSON.parse(localStorage.getItem('SIPCreds'));
+      if (user) {
+         $.each(user, function(k, v) {
+            $('input[name="'+k+'"]').val(v);
+         });
+      }
+    }
+
+    loadSIPCreds();
+
+    var locale = window.navigator.userLanguage || window.navigator.language;
+    moment.locale(locale);
 
     if (typeof(user) === 'undefined') {
         user = JSON.parse(localStorage.getItem('SIPCreds'));
+        if (user) {
+          initctxSip(user);
+        }
     }
 
+    function initctxSip(user){
+
+    // https://stackoverflow.com/questions/7944460/detect-safari-browser
+    var browserUa = navigator.userAgent.toLowerCase();
+    var isSafari = false;
+    if (browserUa.indexOf('safari') > -1 && browserUa.indexOf('chrome') < 0) {
+      isSafari = true;
+    }
+    var sessionDescriptionHandlerFactoryOptions = {};
+    if (isSafari) {
+      sessionDescriptionHandlerFactoryOptions.modifiers = [SIP.WebRTC.Modifiers.stripG722];
+    }
     ctxSip = {
 
         config : {
-            password        : user.Pass,
-            displayName     : user.Display,
-            uri             : 'sip:'+user.User+'@'+user.Realm,
-            wsServers       : user.WSServer,
+            wsServers: 'wss://'+user.wsServer,
+            uri: 'sip:'+user.User+'@'+user.wsServer,
+            password: user.Pass,
+            displayName: user.User,
+            traceSip: false,
+            userAgentString: "Webphone",
+            register: true,
             registerExpires : 30,
             traceSip        : true,
-            log             : {
+            dtmfType        : SIP.C.dtmfType.RTP,
+	    log             : {
                 level : 0,
-            }
+            },
+            sessionDescriptionHandlerFactoryOptions: sessionDescriptionHandlerFactoryOptions
         },
         ringtone     : document.getElementById('ringtone'),
         ringbacktone : document.getElementById('ringbacktone'),
         dtmfTone     : document.getElementById('dtmfTone'),
-
+	autoanswer   : user.autoanswer,
         Sessions     : [],
         callTimers   : {},
         callActiveID : null,
-        callVolume   : 1,
+        callVolume   : 0,
         Stream       : null,
 
         /**
@@ -41,27 +103,23 @@ $(document).ready(function() {
         formatPhone : function(phone) {
 
             var num;
-
             if (phone.indexOf('@')) {
                 num =  phone.split('@')[0];
             } else {
                 num = phone;
             }
+            // remove everything but digits & '+' sign
+            num = num.toString().replace(/[^+0-9]/g, '');
 
-            num = num.toString().replace(/[^0-9]/g, '');
-
-            if (num.length === 10) {
-                return '(' + num.substr(0, 3) + ') ' + num.substr(3, 3) + '-' + num.substr(6,4);
-            } else if (num.length === 11) {
-                return '(' + num.substr(1, 3) + ') ' + num.substr(4, 3) + '-' + num.substr(7,4);
-            } else {
-                return num;
-            }
+            return num;
         },
 
         // Sound methods
         startRingTone : function() {
-            try { ctxSip.ringtone.play(); } catch (e) { }
+            const startRingTonePromise = ctxSip.ringtone.play();
+            if (startRingTonePromise !== null){
+              startRingTonePromise.catch(() => { ctxSip.setError(true, translator.get('Sound'), translator.get('Your browser need permission to play the Sound Please give the permission by closing this window.'), true); })
+            }
         },
 
         stopRingTone : function() {
@@ -69,7 +127,10 @@ $(document).ready(function() {
         },
 
         startRingbackTone : function() {
-            try { ctxSip.ringbacktone.play(); } catch (e) { }
+            const startRingbackTonePromise = ctxSip.ringbacktone.play();
+            if (startRingbackTonePromise !== null){
+              startRingbackTonePromise.catch(() => { ctxSip.setError(true, translator.get('Sound'), translator.get('Your browser need permission to play the Sound Please give the permission by closing this window.'), true); })
+            }
         },
 
         stopRingbackTone : function() {
@@ -89,10 +150,10 @@ $(document).ready(function() {
             var status;
 
             if (newSess.direction === 'incoming') {
-                status = "Incoming: "+ newSess.displayName;
+                status = translator.get("Incoming: ")+ newSess.displayName;
                 ctxSip.startRingTone();
             } else {
-                status = "Trying: "+ newSess.displayName;
+                status = translator.get("Trying: ")+ newSess.displayName;
                 ctxSip.startRingbackTone();
             }
 
@@ -104,13 +165,13 @@ $(document).ready(function() {
 
             newSess.on('progress',function(e) {
                 if (e.direction === 'outgoing') {
-                    ctxSip.setCallSessionStatus('Calling...');
+                    ctxSip.setCallSessionStatus(translator.get('Calling...'));
                 }
             });
 
             newSess.on('connecting',function(e) {
                 if (e.direction === 'outgoing') {
-                    ctxSip.setCallSessionStatus('Connecting...');
+                    ctxSip.setCallSessionStatus(translator.get('Connecting...'));
                 }
             });
 
@@ -122,35 +183,15 @@ $(document).ready(function() {
 
                 ctxSip.stopRingbackTone();
                 ctxSip.stopRingTone();
-                ctxSip.setCallSessionStatus('Answered');
+                ctxSip.setCallSessionStatus(translator.get('Answered'));
                 ctxSip.logCall(newSess, 'answered');
                 ctxSip.callActiveID = newSess.ctxid;
-            });
-
-            newSess.on('hold', function(e) {
-                ctxSip.callActiveID = null;
-                ctxSip.logCall(newSess, 'holding');
-            });
-
-            newSess.on('unhold', function(e) {
-                ctxSip.logCall(newSess, 'resumed');
-                ctxSip.callActiveID = newSess.ctxid;
-            });
-
-            newSess.on('muted', function(e) {
-                ctxSip.Sessions[newSess.ctxid].isMuted = true;
-                ctxSip.setCallSessionStatus("Muted");
-            });
-
-            newSess.on('unmuted', function(e) {
-                ctxSip.Sessions[newSess.ctxid].isMuted = false;
-                ctxSip.setCallSessionStatus("Answered");
             });
 
             newSess.on('cancel', function(e) {
                 ctxSip.stopRingTone();
                 ctxSip.stopRingbackTone();
-                ctxSip.setCallSessionStatus("Canceled");
+                ctxSip.setCallSessionStatus(translator.get("Canceled"));
                 if (this.direction === 'outgoing') {
                     ctxSip.callActiveID = null;
                     newSess             = null;
@@ -170,26 +211,49 @@ $(document).ready(function() {
             newSess.on('failed',function(e) {
                 ctxSip.stopRingTone();
                 ctxSip.stopRingbackTone();
-                ctxSip.setCallSessionStatus('Terminated');
+                ctxSip.setCallSessionStatus(translator.get('Terminated'));
             });
 
             newSess.on('rejected',function(e) {
                 ctxSip.stopRingTone();
                 ctxSip.stopRingbackTone();
-                ctxSip.setCallSessionStatus('Rejected');
+                ctxSip.setCallSessionStatus(translator.get('Rejected'));
                 ctxSip.callActiveID = null;
                 ctxSip.logCall(this, 'ended');
                 newSess             = null;
             });
 
+            newSess.on('trackAdded', function() {
+              // We need to check the peer connection to determine which track was added
+              var pc = newSess.sessionDescriptionHandler.peerConnection;
+              // Gets remote tracks
+              var remoteStream = new MediaStream();
+              pc.getReceivers().forEach(function(receiver) {
+                remoteStream.addTrack(receiver.track);
+              });
+              $('#audioRemote').get()[0].srcObject = remoteStream;
+              const audioRemotePromise = $('#audioRemote').get()[0].play();
+              if (audioRemotePromise !== null){
+                audioRemotePromise.catch(() => { ctxSip.setError(true, translator.get('Sound'), translator.get('Your browser need permission to play the Sound Please give the permission by closing this window.'), true); })
+              }
+
+
+            });
+
             ctxSip.Sessions[newSess.ctxid] = newSess;
+
+            if(newSess.direction == 'incoming' && newSess.autoanswer >= 0) {
+                setTimeout(function() {
+                    ctxSip.phoneCallButtonPressed(newSess.ctxid);
+                }, newSess.autoanswer*1000);
+            }
 
         },
 
         // getUser media request refused or device was not present
         getUserMediaFailure : function(e) {
             window.console.error('getUserMedia failed:', e);
-            ctxSip.setError(true, 'Media Error.', 'You must allow access to your microphone.  Check the address bar.', true);
+            ctxSip.setError(true, translator.get('Media Error.'), translator.get('You must allow access to your microphone.  Check the address bar.'), true);
         },
 
         getUserMediaSuccess : function(stream) {
@@ -299,9 +363,9 @@ $(document).ready(function() {
             }
 
 
-            i  = '<div class="list-group-item sip-logitem clearfix '+callClass+'" data-uri="'+item.uri+'" data-sessionid="'+item.id+'" title="Double Click to Call">';
+            i  = '<div class="list-group-item sip-logitem clearfix '+callClass+'" data-uri="'+item.uri+'" data-sessionid="'+item.id+'">';
             i += '<div class="clearfix"><div class="pull-left">';
-            i += '<i class="fa fa-fw '+callIcon+' fa-fw"></i> <strong>'+ctxSip.formatPhone(item.uri)+'</strong><br><small>'+moment(item.start).format('MM/DD hh:mm:ss a')+'</small>';
+            i += '<i class="fa fa-fw '+callIcon+' fa-fw"></i> <strong>'+ctxSip.formatPhone(item.uri)+'</strong><br><small>'+moment(item.start).format('L LT')+'</small>';
             i += '</div>';
             i += '<div class="pull-right text-right"><em>'+item.clid+'</em><br>' + callLength+'</div></div>';
 
@@ -310,11 +374,11 @@ $(document).ready(function() {
                 if (item.status === 'ringing' && item.flow === 'incoming') {
                     i += '<button class="btn btn-xs btn-success btnCall" title="Call"><i class="fa fa-phone"></i></button>';
                 } else {
-                    i += '<button class="btn btn-xs btn-primary btnHoldResume" title="Hold"><i class="fa fa-pause"></i></button>';
-                    i += '<button class="btn btn-xs btn-info btnTransfer" title="Transfer"><i class="fa fa-random"></i></button>';
-                    i += '<button class="btn btn-xs btn-warning btnMute" title="Mute"><i class="fa fa-fw fa-microphone"></i></button>';
+                    i += '<button class="btn btn-xs btn-primary btnHoldResume" title="'+translator.get('Hold')+'"><i class="fa fa-pause"></i></button>';
+                    i += '<button class="btn btn-xs btn-info btnTransfer" title="'+translator.get('Transfer')+'"><i class="fa fa-random"></i></button>';
+                    i += '<button class="btn btn-xs btn-warning btnMute" title="'+translator.get('Mute')+'"><i class="fa fa-fw fa-microphone"></i></button>';
                 }
-                i += '<button class="btn btn-xs btn-danger btnHangUp" title="Hangup"><i class="fa fa-stop"></i></button>';
+                i += '<button class="btn btn-xs btn-danger btnHangUp" title="'+translator.get('Hangup')+'"><i class="fa fa-stop"></i></button>';
                 i += '</div>';
             }
             i += '</div>';
@@ -381,39 +445,33 @@ $(document).ready(function() {
          */
         logClear : function() {
 
-            localStorage.removeItem('sipCalls');
-            ctxSip.logShow();
-        },
-
-        sipCall : function(target) {
-
-            try {
-                var s = ctxSip.phone.invite(target, {
-                    media : {
-                        stream      : ctxSip.Stream,
-                        constraints : { audio : true, video : false },
-                        render      : {
-                            remote : $('#audioRemote').get()[0]
-                        },
-                        RTCConstraints : { "optional": [{ 'DtlsSrtpKeyAgreement': 'true'} ]}
-                    }
-                });
-                s.direction = 'outgoing';
-                ctxSip.newSession(s);
-
-            } catch(e) {
-                throw(e);
-            }
-        },
-
-        sipTransfer : function(sessionid) {
-
-            var s      = ctxSip.Sessions[sessionid],
-                target = window.prompt('Enter destination number', '');
-
-            ctxSip.setCallSessionStatus('<i>Transfering the call...</i>');
-            s.refer(target);
-        },
+          localStorage.removeItem('sipCalls');
+          ctxSip.logShow();
+      },
+      sipCall : function(target) {
+          try {
+              var s = ctxSip.phone.invite(target, {
+                  sessionDescriptionHandlerOptions : {
+                      stream      : ctxSip.Stream,
+                      constraints : { audio : true, video : false },
+                      render      : {
+                          remote : $('#audioRemote').get()[0]
+                      },
+                      RTCConstraints : { "optional": [{ 'DtlsSrtpKeyAgreement': 'true'} ]}
+                  }
+              });
+              s.direction = 'outgoing';
+              ctxSip.newSession(s);
+          } catch(e) {
+              throw(e);
+          }
+      },
+      sipTransfer : function(sessionid) {
+          var s      = ctxSip.Sessions[sessionid],
+          target = window.prompt('Enter destination number', '');
+          ctxSip.setCallSessionStatus('<i>Transfering the call...</i>');
+          s.refer(target);
+      },
 
         sipHangUp : function(sessionid) {
 
@@ -433,7 +491,10 @@ $(document).ready(function() {
 
         sipSendDTMF : function(digit) {
 
-            try { ctxSip.dtmfTone.play(); } catch(e) { }
+            const dtmfTonePromise = ctxSip.dtmfTone.play();
+            if (dtmfTonePromise !== null){
+              dtmfTonePromise.catch(() => { ctxSip.setError(true, translator.get('Sound'), translator.get('Your browser need permission to play the Sound Please give the permission by closing this window.'), true); })
+            }
 
             var a = ctxSip.callActiveID;
             if (a) {
@@ -455,12 +516,8 @@ $(document).ready(function() {
             } else if (s.accept && !s.startTime) {
 
                 s.accept({
-                    media : {
-                        stream      : ctxSip.Stream,
+                    sessionDescriptionHandlerOptions : {
                         constraints : { audio : true, video : false },
-                        render      : {
-                            remote : { audio: $('#audioRemote').get()[0] }
-                        },
                         RTCConstraints : { "optional": [{ 'DtlsSrtpKeyAgreement': 'true'} ]}
                     }
                 });
@@ -468,24 +525,46 @@ $(document).ready(function() {
         },
 
         phoneMuteButtonPressed : function (sessionid) {
-
             var s = ctxSip.Sessions[sessionid];
-
+            if (s.state !== SIP.C.causes.STATUS_CONNECTED) {
+              return;
+            }
             if (!s.isMuted) {
-                s.mute();
+                var mute = true;
             } else {
-                s.unmute();
+                var mute = false;
+            }
+            var pc = s.sessionDescriptionHandler.peerConnection;
+            if (pc.getSenders) {
+              pc.getSenders().forEach(function (sender) {
+                if (sender.track) {
+                  sender.track.enabled = !mute;
+                }
+              });
+            } else {
+              pc.getLocalStreams().forEach(function (stream) {
+                stream.getAudioTracks().forEach(function (track) {
+                  track.enabled = !mute;
+                });
+              });
+            }
+            s.isMuted = mute;
+            if (s.isMuted) {
+                ctxSip.setCallSessionStatus(translator.get("Muted"));
+            } else {
+                ctxSip.setCallSessionStatus(translator.get("Answered"));
             }
         },
 
         phoneHoldButtonPressed : function(sessionid) {
 
             var s = ctxSip.Sessions[sessionid];
-
-            if (s.isOnHold().local === true) {
+            if (s.local_hold) {
                 s.unhold();
+                ctxSip.setCallSessionStatus(translator.get("Answered"));
             } else {
                 s.hold();
+                ctxSip.setCallSessionStatus(translator.get("Hold"));
             }
         },
 
@@ -496,15 +575,13 @@ $(document).ready(function() {
             if (err === true) {
                 $("#mdlError p").html(msg);
                 $("#mdlError").modal('show');
-
+                $("#mdlError .modal-header").find('button').remove();
                 if (closable) {
                     var b = '<button type="button" class="close" data-dismiss="modal">&times;</button>';
-                    $("#mdlError .modal-header").find('button').remove();
                     $("#mdlError .modal-header").prepend(b);
                     $("#mdlError .modal-title").html(title);
                     $("#mdlError").modal({ keyboard : true });
                 } else {
-                    $("#mdlError .modal-header").find('button').remove();
                     $("#mdlError .modal-title").html(title);
                     $("#mdlError").modal({ keyboard : false });
                 }
@@ -521,22 +598,25 @@ $(document).ready(function() {
          */
         hasWebRTC : function() {
 
+            var browserUa = navigator.userAgent.toLowerCase();
+            var isSafari = false;
+            if (browserUa.indexOf('safari') > -1 && browserUa.indexOf('chrome') < 0) {
+              isSafari = true;
+            }
+
             if (navigator.webkitGetUserMedia) {
                 return true;
             } else if (navigator.mozGetUserMedia) {
                 return true;
             } else if (navigator.getUserMedia) {
                 return true;
+            } else if (isSafari) {
+                return true;
             } else {
-                ctxSip.setError(true, 'Unsupported Browser.', 'Your browser does not support the features required for this phone.');
-                window.console.error("WebRTC support not found");
                 return false;
             }
         }
     };
-
-
-
 
     // Throw an error if the browser can't hack it.
     if (!ctxSip.hasWebRTC()) {
@@ -546,14 +626,14 @@ $(document).ready(function() {
     ctxSip.phone = new SIP.UA(ctxSip.config);
 
     ctxSip.phone.on('connected', function(e) {
-        ctxSip.setStatus("Connected");
+        ctxSip.setStatus(translator.get("Connected"));
     });
 
     ctxSip.phone.on('disconnected', function(e) {
-        ctxSip.setStatus("Disconnected");
+        ctxSip.setStatus(translator.get("Disconnected"));
 
         // disable phone
-        ctxSip.setError(true, 'Websocket Disconnected.', 'An Error occurred connecting to the websocket.');
+        ctxSip.setError(true, translator.get('Websocket Disconnected.'), translator.get('An Error occurred connecting to the websocket.'), true);
 
         // remove existing sessions
         $("#sessions > .session").each(function(i, session) {
@@ -564,7 +644,7 @@ $(document).ready(function() {
     ctxSip.phone.on('registered', function(e) {
 
         var closeEditorWarning = function() {
-            return 'If you close this window, you will not be able to make or receive calls from your browser.';
+            return translator.get('If you close this window, you will not be able to make or receive calls from your browser.');
         };
 
         var closePhone = function() {
@@ -580,29 +660,33 @@ $(document).ready(function() {
         localStorage.setItem('ctxPhone', 'true');
 
         $("#mldError").modal('hide');
-        ctxSip.setStatus("Ready");
+        ctxSip.setStatus(translator.get("Ready"));
 
-        // Get the userMedia and cache the stream
-        if (SIP.WebRTC.isSupported()) {
-            SIP.WebRTC.getUserMedia({ audio : true, video : false }, ctxSip.getUserMediaSuccess, ctxSip.getUserMediaFailure);
-        }
     });
 
     ctxSip.phone.on('registrationFailed', function(e) {
-        ctxSip.setError(true, 'Registration Error.', 'An Error occurred registering your phone. Check your settings.');
-        ctxSip.setStatus("Error: Registration Failed");
+        ctxSip.setError(true, translator.get('Registration Error.'), translator.get('An Error occurred registering your phone. Check your settings.'), true);
+        ctxSip.setStatus(translator.get("Error: Registration Failed"));
     });
 
     ctxSip.phone.on('unregistered', function(e) {
-        ctxSip.setError(true, 'Registration Error.', 'An Error occurred registering your phone. Check your settings.');
-        ctxSip.setStatus("Error: Registration Failed");
+        ctxSip.setError(true, translator.get('Unregistered.'), translator.get('An Error occurred registering your phone. Check your network connectivity.'), true);
+        ctxSip.setStatus(translator.get("Error: unregistered"));
     });
 
     ctxSip.phone.on('invite', function (incomingSession) {
 
         var s = incomingSession;
-
+        s.isMuted = false;
         s.direction = 'incoming';
+        s.autoanswer = -1;
+
+        try {
+            var callinfo = s.request.headers['Call-Info'][0].raw;
+            var duration = callinfo.match(/answer-after=(\d+)/i)
+            s.autoanswer = parseInt(duration[1]);
+
+        } catch(error) {}
         ctxSip.newSession(s);
     });
 
@@ -675,29 +759,20 @@ $(document).ready(function() {
         ctxSip.phoneMuteButtonPressed(sessionid);
         return false;
     });
-
+    /*
     $('#sip-logitems').delegate('.sip-logitem', 'dblclick', function(event) {
-        event.preventDefault();
-
-        var uri = $(this).data('uri');
-        $('#numDisplay').val(uri);
-        ctxSip.phoneCallButtonPressed();
-    });
-
+         event.preventDefault();
+         var uri = $(this).data('uri');
+         $('#numDisplay').val(uri);
+         ctxSip.phoneCallButtonPressed();
+     });
+     */
     $('#sldVolume').on('change', function() {
 
         var v      = $(this).val() / 100,
             // player = $('audio').get()[0],
             btn    = $('#btnVol'),
-            icon   = $('#btnVol').find('i'),
-            active = ctxSip.callActiveID;
-
-        // Set the object and media stream volumes
-        if (ctxSip.Sessions[active]) {
-            ctxSip.Sessions[active].player.volume = v;
-            ctxSip.callVolume                     = v;
-        }
-
+            icon   = $('#btnVol').find('i');
         // Set the others
         $('audio').each(function() {
             $(this).get()[0].volume = v;
@@ -798,5 +873,6 @@ $(document).ready(function() {
         this.start = start; //function() { start; }
         this.stop  = stop; //function() { stop; }
     };
+    }
 
 });

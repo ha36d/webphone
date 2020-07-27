@@ -13,7 +13,7 @@
 #sipClient .sipStatus {
   margin: 0 -15px 15px -15px;
   padding: 5px 15px;
-  background-color: #111;
+  background-color: transparent;
   color: #999;
 }
 #sipClient #txtCallStatus {
